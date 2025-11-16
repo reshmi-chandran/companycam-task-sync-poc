@@ -21,19 +21,18 @@
 - **Test 6 – End-to-End Demo**: Record a walkthrough covering the entire chain: create task → verify album → simulate offline burst → sync → review metadata → select subset → download PDF. Capture logs, API responses, and resulting artifacts for stakeholder review.
 
 ### Architecture Summary
-- **Backend Service**: Node.js + Fastify (TypeScript) deployed on AWS Fargate or Lambda, with Postgres (RDS) for task/photo metadata and job queues.
-- **CompanyCam Adapter**: OAuth2 client storing refresh tokens, thin wrapper for album and photo endpoints, plus webhook receiver for photo events and metadata confirmation ([CompanyCam API docs](https://help.companycam.com/en/articles/6828353-api-and-custom-integrations)).
-- **Storage & Queueing**: S3 temporary bucket for offline uploads, AWS SQS for deduplicated photo jobs to respect CompanyCam rate limits.
-- **Admin Tools**: REST endpoints serving photo grids, selection state, and PDF export jobs consumed by the PM dashboard (React web).
-- **PDF Pipeline**: Puppeteer template service that renders task header, ordered photos, and per-photo metadata; outputs to S3 with signed download URLs.
+- **Backend Service**: Node.js + Fastify (TypeScript) deployed on AWS Fargate or Lambda, with Postgres (RDS) for task/photo metadata, selection state, and export jobs.
+- **CompanyCam Adapter**: OAuth2 client storing refresh tokens, wrapper for album/photo endpoints, plus webhook receiver for photo events and metadata confirmation ([CompanyCam API docs](https://help.companycam.com/en/articles/6828353-api-and-custom-integrations)).
+- **Storage & Queueing**: S3 temporary bucket for offline uploads and AWS SQS worker queue to handle deduplicated photo jobs without exceeding CompanyCam rate limits.
+- **PDF Pipeline**: Puppeteer-based service that renders task header, ordered selected photos, and per-photo metadata; outputs to S3 with signed download URLs.
 
 ### Integration Flow
-1. **Task Provisioning**: `POST /tasks` receives PM task payload, creates or reuses a CompanyCam album, persists mapping (`taskId`, `albumId`, version, seed) in Postgres.
-2. **Mobile Sync Tokens**: API issues signed upload URLs/tokens so field crews push offline batches when connectivity returns.
-3. **Offline Upload Queue**: Mobile client posts batches (`photoId`, hash, metadata, binary). API stores batch in S3, enqueues dedup job, and marks provisional entries in Postgres.
-4. **CompanyCam Upload & Webhook**: Worker uploads missing files to CompanyCam, records resulting photo IDs. Webhook receiver confirms final metadata (timestamp, user, GPS) and marks photo immutable.
-5. **Admin Selection**: Dashboard calls `GET /tasks/:id/photos` for grid-ready payload. Admin toggles checkboxes; selections stored via `POST /tasks/:id/photos/selection` with order preserved.
-6. **PDF Export**: Admin triggers `POST /tasks/:id/pdf`. Service pulls selected photos, requests high-res URLs, renders Puppeteer template, stores PDF, and notifies dashboard.
+1. **Task Provisioning**: `POST /tasks` receives PM task payload, creates or reuses a CompanyCam album, and persists the mapping (`taskId`, `albumId`) in Postgres.
+2. **Offline Capture Tokens**: API issues signed upload URLs/tokens so field crews (or automated harness) can queue offline batches and submit once connectivity resumes.
+3. **Offline Upload Queue**: Client posts batches (`photoId`, hash, metadata, binary). API stores payload in S3, enqueues dedupe job, and records provisional entries in Postgres.
+4. **CompanyCam Upload & Webhook**: Worker uploads missing files to CompanyCam, logs resulting photo IDs. Webhook receiver confirms metadata (timestamp, user, GPS) and locks the record as immutable.
+5. **Photo Selection**: Admin tooling calls `GET /tasks/:id/photos` for thumbnails + metadata. Selections are sent via `POST /tasks/:id/photos/selection`, with ordering preserved server-side for downstream export.
+6. **Selective PDF Export**: `POST /tasks/:id/pdf` pulls only the stored selections, fetches high-res URLs, renders the PDF, and responds with a signed download link plus audit log entry.
 
 ### Core API Surface
 - `POST /tasks` – Create task + album mapping, return IDs and upload credentials.
@@ -50,22 +49,13 @@
 - Conflict handling: if webhook arrives before local batch confirmation, merge by hash and keep earliest metadata.
 
 ### Selective Photo Export
-- Admin grid UI consumes API payload with thumbnail CDN URLs (CompanyCam or cached proxy), metadata badges, and checkbox bindings.
-- Selection changes persisted immediately to support collaborative workflows.
-- PDF builder respects stored order, injecting captions: photo index, timestamp, user, GPS coordinates, CompanyCam photo ID.
-- Export audit log records requester, version, and list of photo IDs to guarantee immutability.
-
-### 48-Hour Proof-of-Concept Test Plan
-- **Setup (0–6h)**: Deploy Fastify skeleton, Postgres schema (`tasks`, `photos`, `selections`, `exports`), and mock CompanyCam adapter for local runs.
-- **Integration (6–18h)**: Connect to CompanyCam sandbox: album creation, photo upload, webhook receiver. Seed sample task, verify API maps album IDs correctly.
-- **Offline Burst (18–30h)**: Script 120-photo offline batch with duplicates and forced network toggles. Validate queue processing, dedupe accuracy, and webhook reconciliation.
-- **Selection & PDF (30–42h)**: Build selection endpoints plus Puppeteer template with placeholder branding. Ensure metadata renders per photo.
-- **Validation (42–48h)**: Run end-to-end demo: task → album → offline upload → admin selection → PDF download. Capture logs, metrics, and video walkthrough for stakeholders.
+- API supplies thumbnail URLs (CompanyCam CDN or cached proxy), metadata badges, and selection state; clients use this payload to render checkbox grids.
+- Selections are saved immediately, including administrator ID and timestamp, so downstream exports can trust the order.
+- PDF builder injects captions for each selected photo: index, timestamp, user, GPS coordinates, CompanyCam photo ID; immutable audit logs capture every export request.
 
 ### Deliverables
-- Sync architecture document detailing flow charts, sequence diagrams, and data contracts.
-- Node.js API repo with CompanyCam integration, offline queue handling, selection state, and PDF export endpoint.
-- Test artifacts: scripts/logs proving 100-photo offline burst, dedupe, webhook reconciliation, and selective PDF export.
-- Demo assets: short video showing dashboard grid, selection workflow, and final PDF; README with setup instructions and environment variable documentation.
+- API architecture & flow documentation illustrating the required proof chain.
+- Node.js repository implementing CompanyCam integration, offline queue handling, selection management, and PDF export endpoint.
+- Test artifacts produced from the 48-hour plan (logs, scripts, and evidence of the 100-photo offline burst through PDF export).
 
 
